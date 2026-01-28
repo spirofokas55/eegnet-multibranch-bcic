@@ -257,7 +257,7 @@ def load_data(path, cfg):
 
     # Standard BCIC IV-2a MI codes (most common)
     desired_769 = {"left": 769, "right": 770, "foot": 771, "tongue": 772}
-    # Your old mapping (sometimes happens depending on annotation remap)
+    # Old mapping (sometimes happens depending on annotation remap)
     desired_7 = {"left": 7, "right": 8, "foot": 9, "tongue": 10}
 
     # Choose whichever mapping fully exists in this file
