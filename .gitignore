@@ -1,0 +1,10 @@
+runs/
+data/
+__pycache__/
+*.pth
+*.log
+*.csv
+*.json
+.ipynb_checkpoints/
+.DS_Store
+.env
