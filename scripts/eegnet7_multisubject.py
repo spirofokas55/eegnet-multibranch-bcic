@@ -1,22 +1,12 @@
 """
-EEGNet 7.0 (MULTI-BRANCH SPATIAL FUSION) — MULTI-SUBJECT + MULTI-SEED RUNNER
+Multi-subject, multi-seed experiment runner for a Multi-Branch EEGNet variant (BCIC IV-2a).
 
-Runs:
-- Subjects: A01T ... A09T (within-session split per subject)
-- Seeds: configurable list
-
-Outputs:
-runs/
-  eegnet7_A01T_seed42_YYYYmmdd_HHMMSS/
-    best.pth
-    metrics.json
-    confusion_matrix.txt
-    classification_report.txt
-    train.log
-
-And:
-runs/summary.csv
-runs/summary.json
+For each subject (A01T..A09T) and seed, this script:
+- Loads and band-pass filters EEG
+- Epochs motor imagery trials
+- Performs a within-subject train/val/test split
+- Trains with optional cropping + augmentation
+- Saves per-run artifacts and an aggregate summary under `runs/`
 """
 
 import os
@@ -38,9 +28,10 @@ from sklearn.metrics import confusion_matrix, classification_report, cohen_kappa
 
 
 # -----------------------------
-# Config
+# Configuration
 # -----------------------------
 class Config:
+    # Repro
     seed = 42
 
     # Data
@@ -76,7 +67,7 @@ class Config:
     crop_seconds = 2.0
     crops_per_epoch = 4
 
-    # Test Time
+    # Test-time inference
     tta_voting = True
     tta_stride = 0.2
 
@@ -88,9 +79,10 @@ cfg = Config()
 
 
 # -----------------------------
-# Repro + device
+# Reproducibility + device
 # -----------------------------
-def set_seed(seed: int):
+def set_seed(seed: int) -> None:
+    """Seed numpy/torch RNGs and configure deterministic CUDA behavior (when available)."""
     np.random.seed(seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
@@ -106,15 +98,19 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # Model
 # -----------------------------
 class MBEEGNet(nn.Module):
-    """Multi-Branch EEGNet with Independent Spatial Filters"""
-    def __init__(self, n_channels, n_times, num_classes=4, cfg=None):
+    """Multi-branch EEGNet-style model with independent temporal branches and spatial filtering."""
+
+    def __init__(self, n_channels: int, n_times: int, num_classes: int = 4, cfg: Config | None = None):
         super().__init__()
+        if cfg is None:
+            raise ValueError("cfg must be provided")
+
         F1 = cfg.F1
         D = cfg.D
         F2 = F1 * D
 
-        # --- Branch 1: Low Freq (Mu-ish timescale) ---
-        self.conv1_low = nn.Conv2d(1, F1, (1, cfg.kern_low), padding=(0, cfg.kern_low//2), bias=False)
+        # Branch 1: longer temporal kernel (lower-frequency timescale)
+        self.conv1_low = nn.Conv2d(1, F1, (1, cfg.kern_low), padding=(0, cfg.kern_low // 2), bias=False)
         self.bn1_low = nn.BatchNorm2d(F1)
         self.spat1_low = nn.Conv2d(F1, F2, (n_channels, 1), groups=F1, bias=False)
         self.bn2_low = nn.BatchNorm2d(F2)
@@ -122,8 +118,8 @@ class MBEEGNet(nn.Module):
         self.pool_low = nn.AvgPool2d((1, 4))
         self.drop_low = nn.Dropout(cfg.dropout)
 
-        # --- Branch 2: High Freq (Beta-ish timescale) ---
-        self.conv1_high = nn.Conv2d(1, F1, (1, cfg.kern_high), padding=(0, cfg.kern_high//2), bias=False)
+        # Branch 2: shorter temporal kernel (higher-frequency timescale)
+        self.conv1_high = nn.Conv2d(1, F1, (1, cfg.kern_high), padding=(0, cfg.kern_high // 2), bias=False)
         self.bn1_high = nn.BatchNorm2d(F1)
         self.spat1_high = nn.Conv2d(F1, F2, (n_channels, 1), groups=F1, bias=False)
         self.bn2_high = nn.BatchNorm2d(F2)
@@ -131,7 +127,7 @@ class MBEEGNet(nn.Module):
         self.pool_high = nn.AvgPool2d((1, 4))
         self.drop_high = nn.Dropout(cfg.dropout)
 
-        # --- Fusion & Classifier ---
+        # Fusion + classifier head
         self.fusion_conv = nn.Conv2d(F2 * 2, F2 * 2, (1, 16), padding=(0, 8), groups=F2 * 2, bias=False)
         self.point_conv = nn.Conv2d(F2 * 2, F2 * 2, (1, 1), bias=False)
         self.bn_fuse = nn.BatchNorm2d(F2 * 2)
@@ -139,26 +135,22 @@ class MBEEGNet(nn.Module):
         self.pool_fuse = nn.AvgPool2d((1, 8))
         self.drop_fuse = nn.Dropout(cfg.dropout)
 
-        # Calculate Flatten Size
+        # Infer flatten dimension from a dummy forward pass
         with torch.no_grad():
             dummy = torch.zeros(1, 1, n_channels, n_times)
 
-            # Branch 1
             l = self.bn1_low(self.conv1_low(dummy))
             l = self.spat1_low(l)
             l = self.drop_low(self.pool_low(self.elu_low(self.bn2_low(l))))
 
-            # Branch 2
             h = self.bn1_high(self.conv1_high(dummy))
             h = self.spat1_high(h)
             h = self.drop_high(self.pool_high(self.elu_high(self.bn2_high(h))))
 
-            # Align
             min_t = min(l.shape[3], h.shape[3])
             l = l[:, :, :, :min_t]
             h = h[:, :, :, :min_t]
 
-            # Fuse
             x = torch.cat([l, h], dim=1)
             x = self.fusion_conv(x)
             x = self.point_conv(x)
@@ -167,8 +159,8 @@ class MBEEGNet(nn.Module):
 
         self.classifier = nn.Linear(flat, num_classes)
 
-    def forward(self, x):
-        # Low
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Low branch
         l = self.conv1_low(x)
         l = self.bn1_low(l)
         l = self.spat1_low(l)
@@ -177,7 +169,7 @@ class MBEEGNet(nn.Module):
         l = self.pool_low(l)
         l = self.drop_low(l)
 
-        # High
+        # High branch
         h = self.conv1_high(x)
         h = self.bn1_high(h)
         h = self.spat1_high(h)
@@ -186,7 +178,7 @@ class MBEEGNet(nn.Module):
         h = self.pool_high(h)
         h = self.drop_high(h)
 
-        # Align time
+        # Align time dimension if pooling/conv padding differs slightly
         if l.shape[3] != h.shape[3]:
             min_t = min(l.shape[3], h.shape[3])
             l = l[:, :, :, :min_t]
@@ -208,26 +200,25 @@ class MBEEGNet(nn.Module):
 # -----------------------------
 # Augmentations
 # -----------------------------
-def mixup_data(x, y, alpha=0.4, device='cpu'):
-    if alpha > 0:
-        lam = np.random.beta(alpha, alpha)
-    else:
-        lam = 1.0
+def mixup_data(x: torch.Tensor, y: torch.Tensor, alpha: float = 0.4, device: str | torch.device = "cpu"):
+    """Standard mixup over a batch (returns mixed_x, y_a, y_b, lambda)."""
+    lam = np.random.beta(alpha, alpha) if alpha > 0 else 1.0
     idx = torch.randperm(x.size(0)).to(device)
     mixed_x = lam * x + (1 - lam) * x[idx, :]
     return mixed_x, y, y[idx], lam
 
 
-def random_crop(x, crop_len: int):
+def random_crop(x: torch.Tensor, crop_len: int) -> torch.Tensor:
+    """Randomly crop along the time axis. Expects x shaped (B,1,C,T)."""
     T = x.shape[3]
     if crop_len >= T:
         return x
     start = np.random.randint(0, T - crop_len + 1)
-    return x[:, :, :, start:start + crop_len]
+    return x[:, :, :, start : start + crop_len]
 
 
-def sign_flip_batch(x, p=0.5):
-    # x: (B,1,C,T) - flip per example
+def sign_flip_batch(x: torch.Tensor, p: float = 0.5) -> torch.Tensor:
+    """Randomly multiply each example by -1 with probability p. Expects x shaped (B,1,C,T)."""
     if not torch.is_tensor(x):
         return x
     mask = (torch.rand(x.size(0), device=x.device) < p).float().view(-1, 1, 1, 1)
@@ -235,9 +226,10 @@ def sign_flip_batch(x, p=0.5):
 
 
 # -----------------------------
-# Data Loading
+# Data loading + preprocessing
 # -----------------------------
-def load_data(path, cfg):
+def load_data(path: str, cfg: Config):
+    """Load a single BCIC IV-2a .gdf file and return (X, y, C, T, sfreq)."""
     if not os.path.exists(path):
         raise FileNotFoundError(path)
 
@@ -245,6 +237,7 @@ def load_data(path, cfg):
     raw = mne.io.read_raw_gdf(path, preload=True)
     raw.pick("eeg")
 
+    # Average reference (best-effort; some files/settings may raise)
     try:
         raw.set_eeg_reference("average", projection=False)
     except Exception:
@@ -255,28 +248,26 @@ def load_data(path, cfg):
     events, event_id_from_ann = mne.events_from_annotations(raw)
     present = set(events[:, 2].tolist())
 
-    # Standard BCIC IV-2a MI codes (most common)
+    # Common BCIC IV-2a motor imagery codes
     desired_769 = {"left": 769, "right": 770, "foot": 771, "tongue": 772}
-    # Old mapping (sometimes happens depending on annotation remap)
+    # Alternate mapping that may appear depending on annotation remapping
     desired_7 = {"left": 7, "right": 8, "foot": 9, "tongue": 10}
 
-    # Choose whichever mapping fully exists in this file
+    # Choose a mapping that is fully present in this file
     if all(v in present for v in desired_769.values()):
         desired = desired_769
     elif all(v in present for v in desired_7.values()):
         desired = desired_7
     else:
-        # Helpful debug
         raise ValueError(
-            f"Event codes in file don't match expected MI sets.\n"
+            "Event codes do not match expected motor imagery label sets.\n"
             f"Present codes (unique): {sorted(present)}\n"
             f"Annotation event_id map sample: {list(event_id_from_ann.items())[:10]}"
         )
 
-    # Keep only relevant events
+    # Keep only relevant events for epoching
     rel_events = events[np.isin(events[:, 2], list(desired.values()))]
 
-    # Build epochs (on_missing='raise' is fine now because we validated codes)
     epochs = mne.Epochs(
         raw,
         rel_events,
@@ -289,7 +280,7 @@ def load_data(path, cfg):
         reject={"eeg": cfg.reject_threshold},
     )
 
-    X = epochs.get_data(copy=True)[:, :cfg.n_eeg_channels_take, :]
+    X = epochs.get_data(copy=True)[:, : cfg.n_eeg_channels_take, :]
 
     inv = {desired["left"]: 0, desired["right"]: 1, desired["foot"]: 2, desired["tongue"]: 3}
     y = np.array([inv[c] for c in epochs.events[:, -1]])
@@ -297,36 +288,43 @@ def load_data(path, cfg):
     return X, y, X.shape[1], X.shape[2], float(raw.info["sfreq"])
 
 
-
-def fit_scalers(X):
+def fit_scalers(X: np.ndarray):
+    """Fit a per-channel StandardScaler on training data only."""
     return [StandardScaler().fit(X[:, c, :].reshape(-1, 1)) for c in range(X.shape[1])]
 
 
-def apply_scalers(X, scalers):
-    return np.array([
-        scalers[c].transform(X[:, c, :].reshape(-1, 1)).reshape(X.shape[0], -1)
-        for c in range(X.shape[1])
-    ]).transpose(1, 0, 2)
+def apply_scalers(X: np.ndarray, scalers):
+    """Apply per-channel scalers. Input X: (N, C, T). Output: (N, C, T)."""
+    return (
+        np.array(
+            [
+                scalers[c].transform(X[:, c, :].reshape(-1, 1)).reshape(X.shape[0], -1)
+                for c in range(X.shape[1])
+            ]
+        )
+        .transpose(1, 0, 2)
+    )
 
 
-def cfg_to_dict(cfg_obj):
+def cfg_to_dict(cfg_obj: Config) -> dict:
+    """Serialize a simple config object to a dict (public attributes only)."""
     keys = [k for k in dir(cfg_obj) if not k.startswith("__") and not callable(getattr(cfg_obj, k))]
     return {k: getattr(cfg_obj, k) for k in keys}
 
 
 # -----------------------------
-# Training + Eval (one subject, one seed)
+# Training + evaluation (one subject, one seed)
 # -----------------------------
 def run_one(subject_id: str, gdf_path: str, seed: int, base_run_dir: Path) -> dict:
-    # Seed everything
+    # Reproducibility for this run
     cfg.seed = int(seed)
     set_seed(cfg.seed)
 
-    # Create run dir
+    # Run output directory
     run_dir = base_run_dir / f"eegnet7_{subject_id}_seed{seed}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    # Per-run logging (file + stdout)
+    # Per-run logger (file + stdout)
     logger = logging.getLogger(f"{subject_id}_seed{seed}_{run_dir.name}")
     logger.setLevel(logging.INFO)
     logger.handlers.clear()
@@ -339,18 +337,18 @@ def run_one(subject_id: str, gdf_path: str, seed: int, base_run_dir: Path) -> di
     logger.addHandler(fh)
     logger.addHandler(sh)
 
-    logger.info(f"EEGNet 7.0 | Subject={subject_id} | Seed={seed} | Device={device}")
-    logger.info(f"Loading: {gdf_path}")
+    logger.info(f"Experiment | Subject={subject_id} | Seed={seed} | Device={device}")
+    logger.info(f"Input: {gdf_path}")
 
-    # 1) Load
+    # 1) Load + preprocess
     X, y, C, T, sfreq = load_data(gdf_path, cfg)
     logger.info(f"Loaded X={X.shape} y={y.shape} sfreq={sfreq}")
 
-    # Basic class sanity
+    # Quick label distribution sanity check
     uniq, cnt = np.unique(y, return_counts=True)
-    logger.info(f"Class counts (0=L,1=R,2=F,3=T): {dict(zip(uniq.tolist(), cnt.tolist()))}")
+    logger.info(f"Class counts (0=Left,1=Right,2=Foot,3=Tongue): {dict(zip(uniq.tolist(), cnt.tolist()))}")
 
-    # 2) Split (within-session)
+    # 2) Split (within-subject)
     X_train, X_tmp, y_train, y_tmp = train_test_split(
         X, y, test_size=0.30, stratify=y, random_state=cfg.seed
     )
@@ -358,17 +356,17 @@ def run_one(subject_id: str, gdf_path: str, seed: int, base_run_dir: Path) -> di
         X_tmp, y_tmp, test_size=0.50, stratify=y_tmp, random_state=cfg.seed
     )
 
-    # 3) Scale per-channel (fit on train)
+    # 3) Scale per-channel (fit on train only)
     scalers = fit_scalers(X_train)
     X_train = apply_scalers(X_train, scalers)
     X_val = apply_scalers(X_val, scalers)
     X_test = apply_scalers(X_test, scalers)
 
-    def get_dl(x, y, shuffle=False):
+    def get_dl(x: np.ndarray, y_: np.ndarray, shuffle: bool = False):
         return DataLoader(
             TensorDataset(
                 torch.tensor(x[:, None, :, :], dtype=torch.float32),
-                torch.tensor(y, dtype=torch.long),
+                torch.tensor(y_, dtype=torch.long),
             ),
             batch_size=cfg.batch_size,
             shuffle=shuffle,
@@ -383,7 +381,7 @@ def run_one(subject_id: str, gdf_path: str, seed: int, base_run_dir: Path) -> di
     if crop_samples <= 0:
         raise ValueError("crop_samples computed <= 0. Check crop_seconds and sfreq.")
 
-    # 4) Model
+    # 4) Model + optimizer + scheduler
     model = MBEEGNet(C, crop_samples, 4, cfg).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.max_lr, weight_decay=cfg.weight_decay)
 
@@ -402,7 +400,7 @@ def run_one(subject_id: str, gdf_path: str, seed: int, base_run_dir: Path) -> di
     patience_ct = 0
     best_path = run_dir / "best.pth"
 
-    logger.info("Starting training...")
+    logger.info("Training started")
 
     for ep in range(cfg.epochs):
         model.train()
@@ -412,6 +410,7 @@ def run_one(subject_id: str, gdf_path: str, seed: int, base_run_dir: Path) -> di
             xb = xb.to(device)
             yb = yb.to(device)
 
+            # Repeat random crops per batch to increase effective training samples
             for _ in range(cfg.crops_per_epoch):
                 x_c = random_crop(xb, crop_samples)
 
@@ -434,10 +433,10 @@ def run_one(subject_id: str, gdf_path: str, seed: int, base_run_dir: Path) -> di
 
                 t_loss += float(loss.item())
 
-        # FIXED: average across crops_per_epoch
+        # Average loss across batches and crop repeats
         avg_loss = t_loss / max(1, (len(train_dl) * cfg.crops_per_epoch))
 
-        # Validation
+        # 5) Validation (optional test-time voting over multiple crops)
         model.eval()
         correct = 0
         total = 0
@@ -457,9 +456,8 @@ def run_one(subject_id: str, gdf_path: str, seed: int, base_run_dir: Path) -> di
                         if end <= Tm:
                             logits_sum += model(xb[:, :, :, start:end])
 
-                    # Always include last crop
-                    logits_sum += model(xb[:, :, :, Tm - crop_samples:Tm])
-
+                    # Always include the final crop
+                    logits_sum += model(xb[:, :, :, Tm - crop_samples : Tm])
                     preds = logits_sum.argmax(1)
                 else:
                     preds = model(xb[:, :, :, :crop_samples]).argmax(1)
@@ -479,10 +477,10 @@ def run_one(subject_id: str, gdf_path: str, seed: int, base_run_dir: Path) -> di
         else:
             patience_ct += 1
             if patience_ct >= cfg.patience:
-                logger.info("Early stopping triggered")
+                logger.info("Early stopping")
                 break
 
-    # Final evaluation on test
+    # 6) Test evaluation (load best checkpoint)
     model.load_state_dict(torch.load(best_path, map_location=device, weights_only=True))
     model.eval()
 
@@ -504,7 +502,7 @@ def run_one(subject_id: str, gdf_path: str, seed: int, base_run_dir: Path) -> di
                     if end <= Tm:
                         logits_sum += model(xb[:, :, :, start:end])
 
-                logits_sum += model(xb[:, :, :, Tm - crop_samples:Tm])
+                logits_sum += model(xb[:, :, :, Tm - crop_samples : Tm])
                 preds = logits_sum.argmax(1)
             else:
                 preds = model(xb[:, :, :, :crop_samples]).argmax(1)
@@ -520,7 +518,7 @@ def run_one(subject_id: str, gdf_path: str, seed: int, base_run_dir: Path) -> di
     cm = confusion_matrix(all_true, all_preds)
     report = classification_report(all_true, all_preds, target_names=["Left", "Right", "Foot", "Tongue"])
 
-    # Save report artifacts
+    # Save per-run artifacts
     (run_dir / "confusion_matrix.txt").write_text(str(cm), encoding="utf-8")
     (run_dir / "classification_report.txt").write_text(report, encoding="utf-8")
 
@@ -541,9 +539,9 @@ def run_one(subject_id: str, gdf_path: str, seed: int, base_run_dir: Path) -> di
         json.dump(metrics, f, indent=2)
 
     logger.info(f"FINAL | Subject={subject_id} Seed={seed} | Test Acc: {test_acc*100:.2f}% | Kappa: {kappa:.4f}")
-    logger.info(f"Saved: {run_dir}")
+    logger.info(f"Artifacts: {run_dir}")
 
-    # Clean handlers so repeated runs don't duplicate logs
+    # Avoid duplicate handlers across repeated runs
     logger.handlers.clear()
 
     return metrics
@@ -558,9 +556,9 @@ def mean_std(x):
 
 
 def write_summary(base_run_dir: Path, all_metrics: list):
+    """Write per-run CSV and aggregate JSON summary under the run directory."""
     base_run_dir.mkdir(parents=True, exist_ok=True)
 
-    # Write CSV
     csv_path = base_run_dir / "summary.csv"
     fieldnames = ["subject", "seed", "val_best_acc", "test_acc", "kappa", "run_dir"]
 
@@ -578,11 +576,9 @@ def write_summary(base_run_dir: Path, all_metrics: list):
             }
             w.writerow(row)
 
-    # Build aggregate stats
     subjects = sorted(set(m["subject"] for m in all_metrics))
     seeds = sorted(set(m["seed"] for m in all_metrics))
 
-    # subject -> list of test_acc across seeds
     by_subject = {s: [] for s in subjects}
     for m in all_metrics:
         by_subject[m["subject"]].append(m["test_acc"])
@@ -600,7 +596,7 @@ def write_summary(base_run_dir: Path, all_metrics: list):
         "overall_test_acc_std": overall_std,
         "per_subject_test_acc_mean": subject_means,
         "per_subject_test_acc_std": subject_stds,
-        "note": "Within-subject, within-session split per subject file (AxxT.gdf).",
+        "note": "Within-subject split per subject file (AxxT.gdf).",
         "created_at": datetime.datetime.now().isoformat(),
     }
 
@@ -615,21 +611,21 @@ def write_summary(base_run_dir: Path, all_metrics: list):
 
 
 # -----------------------------
-# Main runner
+# Main
 # -----------------------------
 def main():
-    # >>> EDIT THIS PATH ONLY IF NEEDED <<<
-    base_dir = Path(os.environ.get("BCICIV2A_DIR", r"C:\Users\spiro\BCI-NeuroStart\data\BCICIV_2a_gdf"))
+    # Dataset directory can be provided via BCICIV2A_DIR. Falls back to ./data if unset.
+    base_dir = Path(os.environ.get("BCICIV2A_DIR", "data/BCICIV_2a_gdf"))
 
     run_root = Path("runs")
 
-    # Subjects and seeds
     subjects = [f"A{str(i).zfill(2)}T" for i in range(1, 10)]  # A01T..A09T
     seeds = [42, 43, 44, 45, 46]
 
+    n_runs = len(subjects) * len(seeds)
     print(f"Device: {device}")
     print(f"Data dir: {base_dir}")
-    print(f"Will run {len(subjects)} subjects x {len(seeds)} seeds = {len(subjects)*len(seeds)} runs")
+    print(f"Planned runs: {len(subjects)} subjects × {len(seeds)} seeds = {n_runs}")
     print(f"Run outputs: {run_root.resolve()}")
 
     all_metrics = []
@@ -655,15 +651,14 @@ def main():
                 all_metrics.append(metrics)
 
             except Exception as e:
-                print(f"[SKIP SUBJECT] {subj} seed {seed} -> {e}")
+                print(f"[ERROR] {subj} seed {seed} failed: {e}")
                 subject_failed = True
                 break
 
         if subject_failed:
-            print(f"[INFO] Skipped subject {subj} after failure.")
+            print(f"[INFO] Skipping remaining seeds for {subj}.")
 
     write_summary(run_root, all_metrics)
-
 
 
 if __name__ == "__main__":
