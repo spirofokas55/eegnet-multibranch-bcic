@@ -2,7 +2,7 @@
 
 This repository implements a multi-branch EEGNet-style deep learning pipeline for 4-class motor imagery EEG decoding using PyTorch and MNE.
 
-The model uses two temporal branches with different kernel lengths, independent spatial projections across electrodes, and fused feature representations before classification.
+The model uses two temporal branches with long and short kernels, independent spatial projections across electrodes, and fused feature representations before classification.
 
 The goal of this project is to study EEG decoding performance across multiple subjects using the BCI Competition IV-2a dataset.
 
@@ -27,6 +27,7 @@ This repository provides a reproducible deep learning pipeline for running multi
 - Uses sliding-window test-time voting
 - Saves per-run logs and evaluation metrics
 - Writes experiment summaries to `summary.csv` and `summary.json`
+- Includes label-shuffle sanity checks to confirm models are not exploiting dataset artifacts
 
 ## Dataset
 
@@ -80,6 +81,43 @@ runs/summary.json
 ## Notes
 
 Results can vary significantly across subjects due to EEG heterogeneity and the difficulty of motor imagery decoding. Metrics reported in this repository correspond to within-session splits with multi-seed evaluation.
+
+## Results
+
+The primary evaluation ran a full multi-subject experiment sweep across the BCIC IV-2a dataset.
+
+Experiment setup:
+
+- 8 subjects
+- 5 random seeds per subject
+- 40 runs total
+
+Across all runs, the model achieved:
+
+**70.5% ± 14.7% mean test accuracy**
+
+Some subjects consistently reached **80–90% accuracy**, while others proved significantly harder to decode. This variability reflects the well-known challenge of EEG heterogeneity across individuals.
+
+## Cross-Session Evaluation
+
+To study session drift, the model was trained on the BCIC IV-2a training session (`AxxT`) and evaluated on the separate evaluation session (`AxxE`).
+
+Across 8 subjects and 5 random seeds per subject, average performance dropped from about **79% within-session accuracy** to about **70% cross-session accuracy**.
+
+This drop was not uniform across subjects. Some subjects transferred relatively well across sessions, while others showed much larger degradation.
+
+Example subject-level averages:
+
+| Subject | Within-Session Accuracy | Cross-Session Accuracy |
+|---------|-------------------------|------------------------|
+| A03     | 93%                     | 84%                    |
+| A07     | 92%                     | 76%                    |
+| A05     | 79%                     | 63%                    |
+| A02     | 58%                     | 50%                    |
+
+These results highlight a central challenge in EEG-based brain-computer interfaces: **session-to-session distribution shift**. Even when the same subject performs the same motor imagery task, signal characteristics can change enough to reduce decoding performance.
+
+This finding shifted the focus of the project beyond benchmark accuracy and toward building models that are more robust to non-stationary neural data.
 
 ## Future Directions
 
