@@ -1,56 +1,39 @@
 # Multi-Branch EEGNet for Motor Imagery (BCIC IV-2a)
 
-This repository contains a multi-branch EEGNet-style architecture for
-4-class motor imagery decoding using PyTorch and MNE.
+This repository implements a multi-branch EEGNet-style deep learning pipeline for 4-class motor imagery EEG decoding using PyTorch and MNE.
 
-The model uses two temporal branches with different kernel lengths,
-independent spatial projections across electrodes, and feature fusion
-before classification.
+The model uses two temporal branches with different kernel lengths, independent spatial projections across electrodes, and fused feature representations before classification. The goal is to study robust EEG decoding behavior across subjects using the BCI Competition IV-2a dataset.
 
-## What this does
-- Runs within-session evaluation per subject file (AxxT.gdf)
-- Multi-subject and multi-seed sweep
-- Sliding-window test-time voting
-- Saves per-run logs and metrics
-- Writes summary.csv and summary.json
+## Overview
+
+This project focuses on motor imagery classification from EEG signals, a core problem in brain-computer interface (BCI) research. The repository includes a multi-subject evaluation pipeline, multi-seed experimentation, sliding-window test-time voting, and automated run logging for reproducible experiments.
+
+## Model Features
+
+- Multi-branch EEGNet-style architecture
+- Two temporal branches with different kernel lengths
+- Independent spatial filtering across electrodes
+- Feature fusion before classification
+- Built with PyTorch and MNE
+
+## What This Repository Does
+
+- Runs within-session evaluation for each subject file (`AxxT.gdf`)
+- Supports multi-subject and multi-seed experiment sweeps
+- Applies sliding-window test-time voting
+- Saves per-run logs and evaluation metrics
+- Writes aggregated experiment outputs to `summary.csv` and `summary.json`
 
 ## Dataset
-BCI Competition IV-2a (GDF files not included in this repository).
-Download separately from PhysioNet or the original competition site.
 
-## Environment
+This project uses the **BCI Competition IV-2a** dataset.
+
+GDF files are **not included** in this repository. Download the dataset separately from PhysioNet or the original BCI Competition source.
+
+## Environment Setup
 
 Create the conda environment:
 
+```bash
 conda env create -f environment.yml
 conda activate neuro
-
-
-Set dataset directory (recommended):
-
-BCICIV2A_DIR=/path/to/BCICIV_2a_gdf
-
-
-## Run
-
-python scripts/eegnet7_multisubject.py
-
-## Outputs
-
-runs/
-eegnet7_A01T_seed42_YYYYmmdd_HHMMSS/
-best.pth
-metrics.json
-confusion_matrix.txt
-classification_report.txt
-train.log
-
-runs/summary.csv
-runs/summary.json
-
-
-## Notes
-
-Results vary substantially by subject due to EEG heterogeneity.
-Reported metrics correspond to within-session splits and multi-seed
-evaluation.
