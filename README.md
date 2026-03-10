@@ -1,5 +1,7 @@
 # Multi-Branch EEGNet for Motor Imagery (BCIC IV-2a)
 
+This project explores robust EEG decoding for brain-computer interfaces using a multi-branch EEGNet architecture and large-scale multi-subject evaluation.
+
 This repository implements a multi-branch EEGNet-style deep learning pipeline for 4-class motor imagery EEG decoding using PyTorch and MNE.
 
 The model uses two temporal branches with long and short kernels, independent spatial projections across electrodes, and fused feature representations before classification.
@@ -15,7 +17,7 @@ This repository provides a reproducible deep learning pipeline for running multi
 ## Model Features
 
 - Multi-branch EEGNet-style architecture
-- Two temporal convolution branches with different kernel lengths
+- Two temporal convolution branches with long and short kernels
 - Independent spatial filtering across electrodes
 - Feature fusion before classification
 - Implemented using PyTorch and MNE
@@ -88,7 +90,7 @@ The primary evaluation ran a full multi-subject experiment sweep across the BCIC
 
 Experiment setup:
 
-- 8 subjects
+- 8 subjects (A01, A02, A03, A05, A06, A07, A08, A09)
 - 5 random seeds per subject
 - 40 runs total
 
