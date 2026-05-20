@@ -1,9 +1,10 @@
 """
-Method comparison: EEGNet 7.0 vs Riemannian MDM — BCIC IV-2a
+Method comparison: EEGNet 7.0 vs Riemannian MDM vs TS+PCA+LDA — BCIC IV-2a
 
-EEGNet values are read from the committed figure (mean ± std over 5 seeds,
-within-session holdout split). Riemannian values are loaded from results JSON
-(mean ± std over 5 CV folds).
+EEGNet values: mean ± std over 5 seeds, read from figures/per_subject_accuracy.png
+               (original 5-seed run; JSON not preserved).
+Riemannian values: loaded from results/riemannian_results.json
+                   (mean ± std over 5-fold CV).
 
 Outputs:
   figures/method_comparison.png
@@ -14,12 +15,10 @@ from pathlib import Path
 
 import numpy as np
 import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
 
-# ----------------------------------------
-# EEGNet results (read from figures/per_subject_accuracy.png)
-# mean ± std over 5 seeds, within-session test split
-# ----------------------------------------
+
+# EEGNet 7.0 — mean ± std over 5 seeds, within-session holdout split.
+# Values read from figures/per_subject_accuracy.png (original run results).
 EEGNET = {
     "A01T": (0.78, 0.05),
     "A02T": (0.52, 0.04),
@@ -31,66 +30,60 @@ EEGNET = {
     "A09T": (0.65, 0.07),
 }
 
-# ----------------------------------------
-# Riemannian MDM results (from results/riemannian_results.json)
-# mean ± std over 5 CV folds, same subjects
-# ----------------------------------------
-def load_mdm(json_path: Path) -> dict:
+
+def load_riemannian(json_path: Path) -> tuple[dict, dict]:
+    """Returns (mdm, ts_pca_lda) dicts of {subject: (mean, std)}."""
     with open(json_path, encoding="utf-8") as f:
         data = json.load(f)
-    return {
-        r["subject"]: (r["mdm_acc_mean"], r["mdm_acc_std"])
-        for r in data["results"]
-    }
+    mdm, ts = {}, {}
+    for r in data["results"]:
+        s = r["subject"]
+        mdm[s] = (r["mdm_acc_mean"], r["mdm_acc_std"])
+        ts[s]  = (r["ts_pca_lda_acc_mean"], r["ts_pca_lda_acc_std"])
+    return mdm, ts
 
 
-def plot_comparison(eegnet: dict, mdm: dict, out_path: Path):
-    subjects = sorted(set(eegnet) & set(mdm))
+def plot_comparison(eegnet: dict, mdm: dict, ts: dict, out_path: Path):
+    subjects = sorted(set(eegnet) & set(mdm) & set(ts))
 
     eeg_means = np.array([eegnet[s][0] for s in subjects])
-    eeg_stds  = np.array([eegnet[s][1] for s in subjects])
     mdm_means = np.array([mdm[s][0]    for s in subjects])
     mdm_stds  = np.array([mdm[s][1]    for s in subjects])
+    ts_means  = np.array([ts[s][0]     for s in subjects])
+    ts_stds   = np.array([ts[s][1]     for s in subjects])
 
     x = np.arange(len(subjects))
-    w = 0.35
+    w = 0.25
 
-    fig, ax = plt.subplots(figsize=(11, 5))
+    fig, ax = plt.subplots(figsize=(13, 5))
 
-    bars_eeg = ax.bar(x - w/2, eeg_means, w, yerr=eeg_stds,
-                      capsize=4, label="EEGNet 7.0\n(mean±std, 5 seeds)",
-                      color="#2171b5", error_kw=dict(elinewidth=1.2))
-    bars_mdm = ax.bar(x + w/2, mdm_means, w, yerr=mdm_stds,
-                      capsize=4, label="Riemannian MDM\n(mean±std, 5-fold CV)",
-                      color="#ef6548", error_kw=dict(elinewidth=1.2))
+    ax.bar(x - w,   eeg_means, w, label="EEGNet 7.0\n(seed=42, test split)",
+           color="#2171b5")
+    ax.bar(x,       mdm_means, w, yerr=mdm_stds, capsize=3,
+           label="Riemannian MDM\n(mean±std, 5-fold CV)", color="#ef6548",
+           error_kw=dict(elinewidth=1.2))
+    ax.bar(x + w,   ts_means,  w, yerr=ts_stds,  capsize=3,
+           label="TS+PCA+LDA\n(mean±std, 5-fold CV)", color="#41ab5d",
+           error_kw=dict(elinewidth=1.2))
 
-    # Chance line
     ax.axhline(0.25, color="gray", linestyle="--", linewidth=1, label="Chance (25%)")
-
-    # Delta annotations (MDM - EEGNet)
-    for i, s in enumerate(subjects):
-        delta = mdm_means[i] - eeg_means[i]
-        sign = "+" if delta >= 0 else ""
-        color = "#238b45" if delta >= 0 else "#cb181d"
-        ax.text(x[i], max(eeg_means[i] + eeg_stds[i], mdm_means[i] + mdm_stds[i]) + 0.025,
-                f"{sign}{delta*100:.0f}%", ha="center", va="bottom",
-                fontsize=8, color=color, fontweight="bold")
 
     ax.set_xticks(x)
     ax.set_xticklabels(subjects)
     ax.set_ylabel("Test Accuracy")
     ax.set_ylim(0, 1.05)
-    ax.set_title("EEGNet 7.0 vs Riemannian MDM — BCIC IV-2a (8 subjects)")
-    ax.legend(loc="lower right", fontsize=9)
+    ax.set_title("EEGNet 7.0 vs Riemannian MDM vs TS+PCA+LDA — BCIC IV-2a (9 subjects)")
+    ax.legend(loc="lower right", fontsize=8.5)
     ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda v, _: f"{v*100:.0f}%"))
 
-    # Overall means in subtitle
     overall_eeg = eeg_means.mean()
     overall_mdm = mdm_means.mean()
+    overall_ts  = ts_means.mean()
     ax.text(0.5, -0.13,
-            f"Overall mean — EEGNet: {overall_eeg*100:.1f}%   MDM: {overall_mdm*100:.1f}%   "
-            f"(EEGNet note: values read from figure; MDM values from riemannian_results.json)",
-            ha="center", transform=ax.transAxes, fontsize=7.5, color="gray")
+            f"Overall mean — EEGNet: {overall_eeg*100:.1f}%  "
+            f"MDM: {overall_mdm*100:.1f}%  "
+            f"TS+PCA+LDA: {overall_ts*100:.1f}%",
+            ha="center", transform=ax.transAxes, fontsize=8, color="gray")
 
     fig.tight_layout()
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -98,23 +91,22 @@ def plot_comparison(eegnet: dict, mdm: dict, out_path: Path):
     print(f"Saved: {out_path}")
 
     # Print table
-    print(f"\n{'Subject':<10} {'EEGNet':>10} {'MDM':>10} {'Delta':>8}")
-    print("-" * 42)
+    print(f"\n{'Subject':<10} {'EEGNet':>9} {'MDM':>9} {'TS+PCA+LDA':>12}")
+    print("-" * 45)
     for i, s in enumerate(subjects):
-        delta = mdm_means[i] - eeg_means[i]
-        sign = "+" if delta >= 0 else ""
-        print(f"{s:<10} {eeg_means[i]*100:>9.1f}%  {mdm_means[i]*100:>8.1f}%  {sign}{delta*100:.1f}%")
-    print("-" * 42)
-    print(f"{'Mean':<10} {overall_eeg*100:>9.1f}%  {overall_mdm*100:>8.1f}%  "
-          f"{'+' if overall_mdm >= overall_eeg else ''}{(overall_mdm-overall_eeg)*100:.1f}%")
+        print(f"{s:<10} {eeg_means[i]*100:>8.1f}%  {mdm_means[i]*100:>8.1f}%  {ts_means[i]*100:>11.1f}%")
+    print("-" * 45)
+    print(f"{'Mean':<10} {overall_eeg*100:>8.1f}%  {overall_mdm*100:>8.1f}%  {overall_ts*100:>11.1f}%")
 
 
 def main():
-    json_path = Path("results/riemannian_results.json")
+    riem_json = Path("results/riemannian_results.json")
     out_path  = Path("figures/method_comparison.png")
 
-    mdm = load_mdm(json_path)
-    plot_comparison(EEGNET, mdm, out_path)
+    mdm, ts = load_riemannian(riem_json)
+    # Only plot subjects present in both EEGNet and Riemannian results
+    eegnet = {s: v for s, v in EEGNET.items() if s in mdm}
+    plot_comparison(eegnet, mdm, ts, out_path)
 
 
 if __name__ == "__main__":

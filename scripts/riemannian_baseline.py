@@ -6,7 +6,8 @@ Pipeline:
            -> MDM (Minimum Distance to Mean, Riemannian metric)
            -> 5-fold stratified CV accuracy
 
-Also runs a Tangent Space + LDA pipeline for comparison.
+Also runs Tangent Space + PCA + LDA (PCA keeps 95% variance to avoid
+overfitting the 253-dimensional tangent space with ~230 training samples).
 
 Outputs:
   runs/riemannian_results.json
@@ -21,6 +22,7 @@ from pathlib import Path
 
 import numpy as np
 import mne
+from sklearn.decomposition import PCA
 from sklearn.model_selection import StratifiedKFold, cross_val_score
 from sklearn.pipeline import Pipeline
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
@@ -65,12 +67,15 @@ def load_data(path: str):
     present = set(events[:, 2].tolist())
 
     desired_769 = {"left": 769, "right": 770, "foot": 771, "tongue": 772}
-    desired_7 = {"left": 7, "right": 8, "foot": 9, "tongue": 10}
+    desired_7   = {"left": 7,   "right": 8,   "foot": 9,   "tongue": 10}
+    desired_5   = {"left": 5,   "right": 6,   "foot": 7,   "tongue": 8}
 
     if all(v in present for v in desired_769.values()):
         desired = desired_769
     elif all(v in present for v in desired_7.values()):
         desired = desired_7
+    elif all(v in present for v in desired_5.values()):
+        desired = desired_5
     else:
         raise ValueError(
             f"Unexpected event codes.\nPresent: {sorted(present)}\n"
@@ -111,7 +116,8 @@ def make_mdm_pipeline():
 def make_ts_lda_pipeline():
     return Pipeline([
         ("cov", Covariances(estimator="oas")),
-        ("ts", TangentSpace(metric="riemann")),
+        ("ts",  TangentSpace(metric="riemann")),
+        ("pca", PCA(n_components=0.95, whiten=True)),
         ("lda", LinearDiscriminantAnalysis()),
     ])
 
@@ -134,15 +140,15 @@ def run_subject(subject_id: str, gdf_path: str) -> dict:
         "n_epochs": int(X.shape[0]),
         "mdm_acc_mean": float(mdm_scores.mean()),
         "mdm_acc_std":  float(mdm_scores.std()),
-        "ts_lda_acc_mean": float(ts_scores.mean()),
-        "ts_lda_acc_std":  float(ts_scores.std()),
+        "ts_pca_lda_acc_mean": float(ts_scores.mean()),
+        "ts_pca_lda_acc_std":  float(ts_scores.std()),
         "mdm_folds": mdm_scores.tolist(),
-        "ts_lda_folds": ts_scores.tolist(),
+        "ts_pca_lda_folds": ts_scores.tolist(),
     }
 
     print(
-        f"[{subject_id}] MDM:    {result['mdm_acc_mean']*100:.1f}% ± {result['mdm_acc_std']*100:.1f}%  |  "
-        f"TS+LDA: {result['ts_lda_acc_mean']*100:.1f}% ± {result['ts_lda_acc_std']*100:.1f}%",
+        f"[{subject_id}] MDM:          {result['mdm_acc_mean']*100:.1f}% ± {result['mdm_acc_std']*100:.1f}%  |  "
+        f"TS+PCA+LDA: {result['ts_pca_lda_acc_mean']*100:.1f}% ± {result['ts_pca_lda_acc_std']*100:.1f}%",
         flush=True,
     )
     return result
@@ -193,7 +199,7 @@ def main():
         "results": all_results,
         "summary": {
             "mdm_overall_mean": float(np.mean([r["mdm_acc_mean"] for r in all_results])),
-            "ts_lda_overall_mean": float(np.mean([r["ts_lda_acc_mean"] for r in all_results])),
+            "ts_pca_lda_overall_mean": float(np.mean([r["ts_pca_lda_acc_mean"] for r in all_results])),
         },
     }
 
@@ -205,14 +211,14 @@ def main():
     csv_path = run_root / "riemannian_summary.csv"
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=["subject", "n_epochs", "mdm_acc_mean", "mdm_acc_std",
-                                           "ts_lda_acc_mean", "ts_lda_acc_std"])
+                                           "ts_pca_lda_acc_mean", "ts_pca_lda_acc_std"])
         w.writeheader()
         for r in all_results:
             w.writerow({k: r[k] for k in w.fieldnames})
 
     print("\n=== SUMMARY ===")
     print(f"MDM overall:    {output['summary']['mdm_overall_mean']*100:.1f}%")
-    print(f"TS+LDA overall: {output['summary']['ts_lda_overall_mean']*100:.1f}%")
+    print(f"TS+PCA+LDA overall: {output['summary']['ts_pca_lda_overall_mean']*100:.1f}%")
     print(f"Saved: {json_path}")
     print(f"Saved: {csv_path}")
 
