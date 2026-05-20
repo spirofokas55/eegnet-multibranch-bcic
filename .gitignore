@@ -5,6 +5,8 @@ __pycache__/
 *.log
 *.csv
 *.json
+!results/*.csv
+!results/*.json
 .ipynb_checkpoints/
 .DS_Store
 .env
