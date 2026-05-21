@@ -187,32 +187,36 @@ evaluated on the same 8 subjects using **pyRiemann**:
 Both pipelines use OAS-regularised covariance estimation and 8–30 Hz bandpass
 filtering over a 0.5–2.5 s post-cue window.
 
+All three methods are evaluated under the **same protocol**: 5-fold stratified
+cross-validation, within-session (AxxT files), seed=42. EEGNet was run on the
+Palmetto GPU cluster; Riemannian pipelines on local CPU.
+
 ### Per-Subject Accuracy
 
 ![Method Comparison](figures/method_comparison.png)
 
-| Subject | EEGNet 7.0 | MDM    | TS+PCA+LDA |
+| Subject | EEGNet     | MDM    | TS+PCA+LDA |
 |---------|------------|--------|------------|
-| A01T    | 78%        | 76%    | 72%        |
-| A02T    | 52%        | 47%    | 44%        |
-| A03T    | 83%        | 73%    | 84%        |
-| A05T    | 72%        | 40%    | 38%        |
-| A06T    | 49%        | 45%    | 47%        |
-| A07T    | 85%        | 69%    | 74%        |
-| A08T    | 81%        | 76%    | 80%        |
-| A09T    | 65%        | 73%    | 82%        |
-| **Mean**| **71%**    | **62%**| **65%**    |
+| A01T    | 65%        | 76%    | 72%        |
+| A02T    | 54%        | 47%    | 44%        |
+| A03T    | 69%        | 73%    | 84%        |
+| A05T    | 57%        | 40%    | 38%        |
+| A06T    | 35%        | 45%    | 47%        |
+| A07T    | 69%        | 69%    | 74%        |
+| A08T    | 74%        | 76%    | 80%        |
+| A09T    | 76%        | 73%    | 82%        |
+| **Mean**| **62%**    | **62%**| **65%**    |
 
-> **Methodological note**: EEGNet results use a canonical stratified 70/15/15
-> train/val/test split averaged over 5 random seeds. Riemannian results use
-> 5-fold stratified cross-validation. These are not strictly equivalent evaluation
-> protocols; direct numerical comparison should be interpreted with that caveat in mind.
+Under identical evaluation conditions, EEGNet and MDM are essentially tied at
+**62%**, with TS+PCA+LDA leading at **65%**. EEGNet's previously reported higher
+figures reflected a more favourable holdout-split protocol rather than a genuine
+performance advantage.
 
-EEGNet leads on 6 of 8 subjects. The main exceptions are **A09T**, where both Riemannian
-methods substantially outperform EEGNet, and **A03T**, where TS+PCA+LDA matches EEGNet.
-Subject **A05T** is an outlier in the opposite direction: EEGNet achieves 72% while both
-Riemannian methods fall near chance, consistent with that subject's inter-class covariance
-matrices being nearly indistinguishable on the Riemannian manifold.
+No single method dominates across all subjects. EEGNet has a clear edge on
+**A05T** (57% vs both Riemannian methods near chance) — consistent with that
+subject's motor imagery being encoded in temporal features rather than covariance
+structure. Riemannian methods lead on **A01T**, **A03T**, and **A06T**, while
+**A09T** is the strongest subject for all three methods.
 
 The full analysis scripts are in `scripts/riemannian_baseline.py`,
 `scripts/compare_methods.py`, and `scripts/investigate_a05t.py`.
@@ -221,8 +225,6 @@ The full analysis scripts are in `scripts/riemannian_baseline.py`,
 
 # Future Directions
 
-- **Direct protocol comparison**: re-run EEGNet under 5-fold cross-validation to
-  produce accuracy estimates on the same footing as the Riemannian baselines.
 - **Combined features**: investigate whether concatenating EEGNet embeddings with
   tangent-space features improves over either method alone.
 - **A09T investigation**: TS+PCA+LDA outperforms EEGNet by 17 points on A09T.
