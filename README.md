@@ -47,6 +47,17 @@ The GDF files are **not included** in this repository. Download the dataset sepa
 
 ---
 
+# Excluded Subjects
+
+Subject **A04T** is excluded from all reported results due to a known EOG channel
+recording inconsistency that affects epoch quality in a way that cannot be corrected
+uniformly in post-processing. This exclusion is applied identically across all methods
+(EEGNet, MDM, TS+PCA+LDA) to ensure fair comparison.
+
+All other 8 subjects (A01T–A03T, A05T–A09T) are included.
+
+---
+
 # Environment Setup
 
 Create the conda environment:
@@ -162,15 +173,65 @@ This finding shifts the focus beyond benchmark accuracy toward building models t
 
 ---
 
+# Baseline Comparisons
+
+To contextualise EEGNet performance, two classical Riemannian geometry baselines were
+evaluated on the same 8 subjects using **pyRiemann**:
+
+- **MDM** (Minimum Distance to Mean): classifies epochs by their distance to the
+  per-class mean covariance matrix on the Riemannian manifold.
+- **TS+PCA+LDA**: projects covariance matrices to the tangent space, reduces
+  dimensionality with PCA (95% variance retained), then applies Linear Discriminant
+  Analysis.
+
+Both pipelines use OAS-regularised covariance estimation and 8–30 Hz bandpass
+filtering over a 0.5–2.5 s post-cue window.
+
+### Per-Subject Accuracy
+
+![Method Comparison](figures/method_comparison.png)
+
+| Subject | EEGNet 7.0 | MDM    | TS+PCA+LDA |
+|---------|------------|--------|------------|
+| A01T    | 78%        | 76%    | 72%        |
+| A02T    | 52%        | 47%    | 44%        |
+| A03T    | 83%        | 73%    | 84%        |
+| A05T    | 72%        | 40%    | 38%        |
+| A06T    | 49%        | 45%    | 47%        |
+| A07T    | 85%        | 69%    | 74%        |
+| A08T    | 81%        | 76%    | 80%        |
+| A09T    | 65%        | 73%    | 82%        |
+| **Mean**| **71%**    | **62%**| **65%**    |
+
+> **Methodological note**: EEGNet results use a canonical stratified 70/15/15
+> train/val/test split averaged over 5 random seeds. Riemannian results use
+> 5-fold stratified cross-validation. These are not strictly equivalent evaluation
+> protocols; direct numerical comparison should be interpreted with that caveat in mind.
+
+EEGNet leads on 6 of 8 subjects. The main exceptions are **A09T**, where both Riemannian
+methods substantially outperform EEGNet, and **A03T**, where TS+PCA+LDA matches EEGNet.
+Subject **A05T** is an outlier in the opposite direction: EEGNet achieves 72% while both
+Riemannian methods fall near chance, consistent with that subject's inter-class covariance
+matrices being nearly indistinguishable on the Riemannian manifold.
+
+The full analysis scripts are in `scripts/riemannian_baseline.py`,
+`scripts/compare_methods.py`, and `scripts/investigate_a05t.py`.
+
+---
+
 # Future Directions
 
-Possible extensions of this project include:
-
-- Cross-session generalization
-- Cross-subject transfer learning
-- Domain adaptation techniques
-- Improved robustness to session drift
-- Subject-independent EEG decoding pipelines
+- **Direct protocol comparison**: re-run EEGNet under 5-fold cross-validation to
+  produce accuracy estimates on the same footing as the Riemannian baselines.
+- **Combined features**: investigate whether concatenating EEGNet embeddings with
+  tangent-space features improves over either method alone.
+- **A09T investigation**: TS+PCA+LDA outperforms EEGNet by 17 points on A09T.
+  Understanding whether this reflects stronger covariance structure, weaker temporal
+  features, or a train/test split artefact would inform future architecture choices.
+- **Cross-subject transfer learning**: the subject-level variance is large enough
+  that subject-independent models remain an open problem on this dataset.
+- **Domain adaptation**: session drift is documented in the cross-session results;
+  Riemannian recentering (e.g. Euclidean alignment) is a natural next step.
 
 ---
 
@@ -181,10 +242,19 @@ figures/
     per_subject_accuracy.png
     confusion_matrix_best.png
     cross_session_comparison.png
+    method_comparison.png
 
 scripts/
     eegnet7_multisubject.py
     eegnet7_cross_session.py
+    riemannian_baseline.py
+    compare_methods.py
+    investigate_a05t.py
+    run_eegnet_seed42.py
+
+results/
+    riemannian_results.json
+    riemannian_summary.csv
 
 environment.yml
 README.md
